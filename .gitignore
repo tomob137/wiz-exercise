@@ -1,0 +1,9 @@
+# Terraform working files and anything that can hold secrets
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+backend.hcl
+tfplan
+crash.log
+.DS_Store
