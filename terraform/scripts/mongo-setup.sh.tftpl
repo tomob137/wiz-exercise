@@ -1,0 +1,46 @@
+#!/bin/bash
+# Runs once as root on first boot (EC2 "user data"). Log: /var/log/cloud-init-output.log
+set -euxo pipefail
+export DEBIAN_FRONTEND=noninteractive
+
+# --- 1. Install MongoDB 4.4 from MongoDB's own repository ---
+apt-get update
+apt-get install -y gnupg curl unzip
+curl -fsSL https://pgp.mongodb.com/server-4.4.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-4.4.gpg
+echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-4.4.gpg ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" \
+  > /etc/apt/sources.list.d/mongodb-org-4.4.list
+apt-get update
+apt-get install -y mongodb-org
+
+# --- 2. AWS CLI v2 (for uploading backups) ---
+curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+
+# --- 3. Listen on the network (the security group decides who can connect) ---
+sed -i 's/^  bindIp: 127.0.0.1/  bindIp: 0.0.0.0/' /etc/mongod.conf
+systemctl enable --now mongod
+for i in $(seq 1 30); do mongo --quiet --eval 'db.runCommand({ping: 1})' && break; sleep 2; done
+
+# --- 4. Create users, THEN switch authentication on ---
+mongo admin --quiet --eval 'db.createUser({user: "admin", pwd: "${admin_pw}", roles: [{role: "root", db: "admin"}]})'
+mongo admin --quiet --eval 'db.createUser({user: "tasky", pwd: "${app_pw}", roles: [{role: "readWrite", db: "go-mongodb"}]})'
+cat >> /etc/mongod.conf <<'EOF'
+security:
+  authorization: enabled
+EOF
+systemctl restart mongod
+
+# --- 5. Daily backup to S3 at 02:00 UTC ---
+cat > /usr/local/bin/mongo-backup.sh <<EOF
+#!/bin/bash
+set -euo pipefail
+TS=\$(date -u +%Y-%m-%dT%H%M%SZ)
+mongodump --username admin --password '${admin_pw}' --authenticationDatabase admin --archive --gzip \
+  | /usr/local/bin/aws s3 cp - s3://${bucket}/backups/mongo-\$TS.archive.gz
+EOF
+chmod 700 /usr/local/bin/mongo-backup.sh
+echo "0 2 * * * root /usr/local/bin/mongo-backup.sh >> /var/log/mongo-backup.log 2>&1" > /etc/cron.d/mongo-backup
+
+# One backup now, so there's something to see straight away
+/usr/local/bin/mongo-backup.sh || true
