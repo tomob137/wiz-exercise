@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tasky
+  namespace: tasky
+  labels:
+    app: tasky
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: tasky
+  template:
+    metadata:
+      labels:
+        app: tasky
+    spec:
+      serviceAccountName: default      # the identity bound to cluster-admin in 04-rbac.yaml
+      containers:
+        - name: tasky
+          image: IMAGE_PLACEHOLDER     # replaced with the ECR image at deploy time
+          ports:
+            - containerPort: 8080
+          env:
+            # The brief: MongoDB access configured via an environment variable in Kubernetes
+            - name: MONGODB_URI
+              valueFrom:
+                secretKeyRef:
+                  name: tasky-env
+                  key: MONGODB_URI
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tasky-env
+                  key: SECRET_KEY
