@@ -1,0 +1,70 @@
+name: app
+
+on:
+  pull_request:
+    paths: ["app/**", "k8s/**", ".github/workflows/app.yml"]
+  push:
+    branches: [main]
+    paths: ["app/**", "k8s/**", ".github/workflows/app.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-scan-push:
+    name: Build, scan (Trivy), push
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Image name = ECR repo + short commit SHA
+        run: echo "IMAGE=${{ vars.ECR_URL }}:${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      - name: Build (runner is amd64, so no --platform needed)
+        run: docker build -t "$IMAGE" app
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          image-ref: ${{ env.IMAGE }}
+          version: v0.69.3      # pin the Trivy binary to a version the advisory lists as safe
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: table
+          exit-code: "0"        # report only; set "1" to block on findings
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        if: github.event_name != 'pull_request'
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
+        if: github.event_name != 'pull_request'
+      - name: Push to ECR
+        if: github.event_name != 'pull_request'
+        run: docker push "$IMAGE"
+
+  deploy:
+    name: Deploy to EKS
+    needs: build-scan-push
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - name: Connect kubectl to the cluster
+        run: aws eks update-kubeconfig --region "${{ vars.AWS_REGION }}" --name "${{ vars.EKS_CLUSTER }}"
+      - name: Apply manifests with the new image
+        run: |
+          IMAGE="${{ vars.ECR_URL }}:${GITHUB_SHA::7}"
+          kubectl apply -f k8s/01-namespace.yaml
+          sed "s|IMAGE_PLACEHOLDER|${IMAGE}|" k8s/02-deployment.yaml | kubectl apply -f -
+          kubectl apply -f k8s/03-service.yaml -f k8s/04-rbac.yaml -f k8s/05-ingress.yaml
+          kubectl -n tasky rollout status deployment/tasky --timeout=300s

@@ -21,6 +21,19 @@ module "eks" {
 
   # Kubernetes control plane audit logging to CloudWatch Logs
   enabled_log_types = ["api", "audit", "authenticator"]
+
+  # Let the GitHub Actions pipeline role run kubectl against the cluster
+  access_entries = {
+    github_actions = {
+      principal_arn = aws_iam_role.github_actions.arn
+      policy_associations = {
+        admin = {
+          policy_arn   = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = { type = "cluster" }
+        }
+      }
+    }
+  }
 }
 
 output "cluster_name" {
