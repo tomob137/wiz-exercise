@@ -3,7 +3,9 @@ resource "aws_iam_openid_connect_provider" "github" {
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
 }
-
+locals {
+  github_sub = "repo:tomob137@346979058/wiz-exercise@1434853831"
+}
 # ...but only for YOUR repo, and only main, pull requests or the production environment.
 resource "aws_iam_role" "github_actions" {
   name = "${var.name}-github-actions"
@@ -17,9 +19,9 @@ resource "aws_iam_role" "github_actions" {
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           "token.actions.githubusercontent.com:sub" = [
-            "repo:${var.github_repo}:ref:refs/heads/main",
-            "repo:${var.github_repo}:pull_request",
-            "repo:${var.github_repo}:environment:production"
+            "${local.github_sub}:ref:refs/heads/main",
+            "${local.github_sub}:pull_request",
+            "${local.github_sub}:environment:production"
           ]
         }
       }
